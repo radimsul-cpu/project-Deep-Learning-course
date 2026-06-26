@@ -10,7 +10,8 @@ from models.detectors.yolov8 import YOLOv8Detector
 from models.detectors.yolox import YOLOXDetector
 from models.detectors.faster_rcnn import FasterRCNNDetector
 from models.reid.resnet_torch import ResNetReID
-from models.reid.osnet import OSNetReID
+from models.reid.resnet101 import ResNet101ReID
+from models.reid.mobilenet import MobileNetReID
 from deep_sort_custom_wrapper import DeepSortWrapper
 from reid_manager.identity_manager import IdentityManager
 
@@ -43,8 +44,10 @@ def main(args):
 
     if args.reid == 'resnet':
         reid_model = ResNetReID(device='cpu')
-    elif args.reid == 'osnet':
-        reid_model = OSNetReID(device='cpu')
+    elif args.reid == 'resnet101':
+        reid_model = ResNet101ReID(device='cpu')
+    elif args.reid == 'mobilenet':
+        reid_model = MobileNetReID(device='cpu')
     else:
         raise ValueError(f"Неизвестная REID модель: {args.reid}")
 
@@ -150,7 +153,7 @@ if __name__ == '__main__':
                         help='Путь к папке с GT (обычно совпадает с sequence_dir). Если указано, посчитает метрики.')
     parser.add_argument('--detector', type=str, default='yolov8', choices=['yolov8', 'yolox', 'faster_rcnn'])
     parser.add_argument('--detector_weights', type=str, default='yolov8n.pt')
-    parser.add_argument('--reid', type=str, default='resnet', choices=['resnet', 'osnet'])
+    parser.add_argument('--reid', type=str, default='resnet', choices=['resnet', 'resnet101','mobilenet'])
     parser.add_argument('--max_cosine_dist', type=float, default=0.2)
     parser.add_argument('--reid_threshold', type=float, default=0.6)
     parser.add_argument('--visualize', action='store_true', help='Показывать видео в реальном времени')

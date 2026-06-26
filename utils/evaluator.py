@@ -9,6 +9,7 @@ if not hasattr(np, 'int'):
 from trackeval import Evaluator, metrics
 from trackeval.datasets._base_dataset import _BaseDataset
 
+# ---------- Класс для оценки трекинга (HOTA, MOTA, IDF1) ----------
 class CustomDirectDataset(_BaseDataset):
     def __init__(self, seq_name, gt_data, tracker_data, seq_length):
         super().__init__()
@@ -67,7 +68,7 @@ class CustomDirectDataset(_BaseDataset):
         gt_raw = self._load_raw_file(tracker, seq, is_gt=True)
         tracker_raw = self._load_raw_file(tracker, seq, is_gt=False)
 
-        # Перемаппинг ID для GT
+        # Перемаппинг ID
         gt_ids_mapped = []
         gt_id_map = {}
         next_gt_id = 0
@@ -80,7 +81,6 @@ class CustomDirectDataset(_BaseDataset):
                 mapped_ids[i] = gt_id_map[old_id]
             gt_ids_mapped.append(mapped_ids)
 
-        # Перемаппинг ID для трекера
         tracker_ids_mapped = []
         tracker_id_map = {}
         next_tracker_id = 0
@@ -145,6 +145,7 @@ class CustomDirectDataset(_BaseDataset):
         return []
 
 
+# ---------- Функция для парсинга MOT-файлов ----------
 def parse_mot_txt(file_path):
     data = {}
     max_frame = 1
@@ -171,7 +172,107 @@ def parse_mot_txt(file_path):
     return data, max_frame
 
 
-def evaluate_metrics(gt_path, det_path):
+# ---------- Оценка детектора: Precision, Recall, F1 ----------
+def evaluate_detector(gt_path, det_path, iou_threshold=0.5):
+    """
+    Вычисляет Precision, Recall, F1 для детектора (без учёта ID).
+    Сопоставляет предсказанные bbox с GT по IoU >= iou_threshold.
+    Возвращает словарь с метриками.
+    """
+    gt_data, _ = parse_mot_txt(gt_path)
+    det_data, _ = parse_mot_txt(det_path)
+
+    tp = 0
+    fp = 0
+    fn = 0
+
+    # Все кадры от 1 до max(последний кадр GT или det)
+    all_frames = set(gt_data.keys()) | set(det_data.keys())
+    for frame in sorted(all_frames):
+        gt_boxes = gt_data.get(frame, np.empty((0, 5)))[:, 1:5]  # [x,y,w,h]
+        det_boxes = det_data.get(frame, np.empty((0, 5)))[:, 1:5]  # [x,y,w,h]
+
+        if len(gt_boxes) == 0:
+            fp += len(det_boxes)
+            continue
+        if len(det_boxes) == 0:
+            fn += len(gt_boxes)
+            continue
+
+        # Преобразуем [x,y,w,h] -> [x1,y1,x2,y2] для IoU
+        gt_boxes = gt_boxes.copy()
+        gt_boxes[:, 2] += gt_boxes[:, 0]  # x2 = x + w
+        gt_boxes[:, 3] += gt_boxes[:, 1]  # y2 = y + h
+
+        det_boxes = det_boxes.copy()
+        det_boxes[:, 2] += det_boxes[:, 0]
+        det_boxes[:, 3] += det_boxes[:, 1]
+
+        # Жадное сопоставление: для каждого GT выбираем лучшее det с IoU >= порога
+        matched_det = set()
+        for gt in gt_boxes:
+            best_iou = 0
+            best_idx = -1
+            for i, det in enumerate(det_boxes):
+                if i in matched_det:
+                    continue
+                iou = compute_iou(gt, det)
+                if iou > best_iou:
+                    best_iou = iou
+                    best_idx = i
+            if best_iou >= iou_threshold:
+                tp += 1
+                matched_det.add(best_idx)
+            else:
+                fn += 1
+
+        # Оставшиеся det считаем FP
+        fp += len(det_boxes) - len(matched_det)
+
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+    recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
+
+    return {
+        'Precision': precision,
+        'Recall': recall,
+        'F1': f1,
+        'TP': tp,
+        'FP': fp,
+        'FN': fn
+    }
+
+
+def compute_iou(box1, box2):
+    """Вычисляет IoU между двумя прямоугольниками [x1,y1,x2,y2]."""
+    x1 = max(box1[0], box2[0])
+    y1 = max(box1[1], box2[1])
+    x2 = min(box1[2], box2[2])
+    y2 = min(box1[3], box2[3])
+    inter = max(0, x2 - x1) * max(0, y2 - y1)
+    area1 = (box1[2] - box1[0]) * (box1[3] - box1[1])
+    area2 = (box2[2] - box2[0]) * (box2[3] - box2[1])
+    union = area1 + area2 - inter
+    return inter / union if union > 0 else 0
+
+
+# ---------- Основная функция оценки (трекинг + детектор) ----------
+def evaluate_metrics(gt_path, det_path, iou_threshold=0.5):
+    """
+    Запускает оценку трекинга (HOTA, MOTA, IDF1) через trackeval,
+    а также оценку детектора (Precision, Recall, F1).
+    Выводит все метрики.
+    """
+    # ---- Оценка детектора ----
+    det_metrics = evaluate_detector(gt_path, det_path, iou_threshold)
+    print("\n======= ОЦЕНКА ДЕТЕКТОРА (Precision, Recall, F1) =======")
+    print(f"Precision: {det_metrics['Precision']:.4f}")
+    print(f"Recall:    {det_metrics['Recall']:.4f}")
+    print(f"F1:        {det_metrics['F1']:.4f}")
+    print(f"TP: {det_metrics['TP']}, FP: {det_metrics['FP']}, FN: {det_metrics['FN']}")
+    print("========================================================\n")
+
+    # ---- Подготовка для оценки трекинга (через trackeval) ----
     if os.path.isdir(gt_path):
         possible_gt_file = os.path.join(gt_path, 'gt', 'gt.txt')
         if os.path.exists(possible_gt_file):
@@ -200,8 +301,6 @@ def evaluate_metrics(gt_path, det_path):
     tracker_data = {'my_tracker': {seq_name: det_parsed}}
 
     dataset = CustomDirectDataset(seq_name, gt_data, tracker_data, seq_length)
-
-    # Убираем аргумент threshold — он не поддерживается
     metrics_list = [metrics.HOTA(), metrics.CLEAR(), metrics.Identity()]
 
     evaluator = Evaluator({
@@ -238,7 +337,7 @@ def evaluate_metrics(gt_path, det_path):
         print(f"Ошибка: отсутствует ключ {e} в результатах.")
         return 0.0
 
-    print("\n======= ОЦЕНКА КАЧЕСТВА (HOTA, MOTA, IDF1) =======")
+    print("\n======= ОЦЕНКА ТРЕКИНГА (HOTA, MOTA, IDF1) =======")
     print(f"Sequence: {seq_name}")
     print(f"HOTA: {hota:.4f}")
     print(f"MOTA: {mota:.4f}")
